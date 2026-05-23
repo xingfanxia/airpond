@@ -48,7 +48,7 @@ canvas{display:block;width:100%;height:100%}
 <div id="ui">
   <button id="btn-reveal" class="active">Reveal</button>
   <button id="btn-crystal">Crystal</button>
-  <button id="btn-star">&#x2B50; Starlight</button>
+  <button id="btn-star">&#x261D;&#xFE0F; &#x795E;&#x6307;</button>
 </div>
 
 <script type="module">
@@ -598,24 +598,35 @@ void main(){
     float maskB = texture2D(u_mask, v_uv + vec2(0.0,  u_texel.y * 3.0)).r;
     float edgeStrength = abs(maskR - maskL) + abs(maskB - maskT);
 
-    // Background: animated ocean scene
-    vec2 op = v_uv * 4.0;
-    float wave1 = sin(op.x * 2.5 + u_time * 0.8) * cos(op.y * 1.8 + u_time * 0.6) * 0.5;
-    float wave2 = sin(op.x * 4.0 - u_time * 1.2 + 1.0) * cos(op.y * 3.0 + u_time * 0.9) * 0.3;
-    float wave3 = sin((op.x + op.y) * 6.0 + u_time * 1.5) * 0.15;
-    float waves = wave1 + wave2 + wave3;
-    float depth = 1.0 - v_uv.y * 0.6;
-    vec3 deepBlue = vec3(0.02, 0.06, 0.18);
-    vec3 midBlue = vec3(0.05, 0.18, 0.38);
-    vec3 surfaceTeal = vec3(0.08, 0.35, 0.45);
-    vec3 bg = mix(deepBlue, midBlue, smoothstep(0.0, 0.5, depth));
-    bg = mix(bg, surfaceTeal, smoothstep(0.5, 1.0, depth));
-    bg += vec3(0.08, 0.15, 0.12) * (waves * 0.5 + 0.5);
-    float caustic = abs(sin(op.x*8.0+u_time*2.0)*cos(op.y*6.0-u_time*1.5));
-    caustic = pow(caustic, 3.0) * 0.4;
-    bg += vec3(0.15, 0.25, 0.20) * caustic * depth;
-    float foam = smoothstep(0.55, 0.7, waves + depth * 0.3);
-    bg = mix(bg, vec3(0.6, 0.75, 0.8), foam * 0.3);
+    // Background: sunset beach scene with flowers
+    float vy = v_uv.y;
+    // Sky gradient (golden sunset)
+    vec3 skyTop = vec3(0.15, 0.25, 0.55);
+    vec3 skyMid = vec3(0.85, 0.45, 0.25);
+    vec3 skyLow = vec3(0.95, 0.65, 0.35);
+    vec3 sky = mix(skyLow, skyMid, smoothstep(0.3, 0.55, vy));
+    sky = mix(sky, skyTop, smoothstep(0.55, 0.85, vy));
+    // Sun glow
+    float sunDist = length(vec2(v_uv.x - 0.5, vy - 0.42) * vec2(1.0, 1.5));
+    sky += vec3(1.0, 0.8, 0.4) * exp(-sunDist * 4.0) * 0.6;
+    // Ground (sand + flowers)
+    vec3 sand = vec3(0.85, 0.72, 0.50);
+    vec3 grass = vec3(0.25, 0.45, 0.18);
+    float groundMix = smoothstep(0.35, 0.25, vy);
+    vec3 ground = mix(sand, grass, smoothstep(0.15, 0.28, vy));
+    // Flower dots
+    vec2 fp = v_uv * vec2(20.0, 15.0);
+    float flowerSeed = fract(sin(dot(floor(fp), vec2(127.1, 311.7))) * 43758.5453);
+    float petal = smoothstep(0.35, 0.15, length(fract(fp) - 0.5));
+    vec3 flowerCol = mix(vec3(0.95,0.4,0.55), vec3(0.95,0.85,0.3), flowerSeed);
+    flowerCol = mix(flowerCol, vec3(0.85,0.5,0.9), step(0.7, flowerSeed));
+    ground = mix(ground, flowerCol, petal * step(0.35, flowerSeed) * groundMix);
+    // Combine
+    vec3 bg = mix(ground, sky, smoothstep(0.22, 0.38, vy));
+    // Warm ambient light
+    bg += vec3(0.06, 0.03, 0.01);
+    // Gentle sway animation
+    bg += vec3(0.03, 0.02, 0.0) * sin(u_time * 0.5 + v_uv.x * 3.0) * groundMix;
     bg = clamp(bg, 0.0, 1.0);
 
     // Smooth reveal blend
@@ -934,7 +945,6 @@ function render() {
   // Particle overlays
   updateHandPts();
   if (currentMode === 'starlight') {
-    updateStars(); drawStars();
     detectFlick(); updateProjectiles(); drawKungfu();
   } else {
     pCtx.globalCompositeOperation = 'source-over';
@@ -953,7 +963,7 @@ const hintEl = document.getElementById('hint');
 const hints = {
   reveal: 'Raise your hand to reveal ✨',
   crystal: 'Touch to create waves',
-  starlight: 'Flick to shoot ⭐ move through stars'
+  starlight: 'Flick to shoot ☝️'
 };
 
 function setMode(m) {
