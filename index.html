@@ -33,10 +33,13 @@ canvas{display:block;width:100%;height:100%}
 #hint{position:fixed;bottom:70px;left:50%;transform:translateX(-50%);
   color:rgba(255,255,255,0.6);font-size:13px;font-family:system-ui;z-index:10;
   pointer-events:none;transition:opacity .5s}
+#status{position:fixed;top:20px;left:20px;z-index:10;font-size:11px;font-family:system-ui;
+  color:rgba(255,255,255,0.5);pointer-events:none;transition:opacity 1s}
 </style>
 </head>
 <body>
 <div id="loading"><div class="spinner"></div><p>Loading camera &amp; hand tracking...</p></div>
+<div id="status"></div>
 <canvas id="c"></canvas>
 <canvas id="particles"></canvas>
 <button id="reset-btn" class="top-btn" title="Reset">&#x21BA;</button>
@@ -625,7 +628,6 @@ function updateTouch(e) {
   updateFingersFromTouch();
 }
 function updateFingersFromTouch() {
-  if (handsReady) return;
   prevFingers.set(fingers);
   fingers.fill(0);
   for (let i=0; i<touchPoints.length && i<10; i++) {
@@ -661,8 +663,12 @@ async function loadMediaPipe() {
     });
     cam.start();
     handsReady = true;
+    document.getElementById('status').textContent = 'Hand tracking active';
+    setTimeout(() => { document.getElementById('status').style.opacity = '0'; }, 3000);
   } catch(e) {
     console.warn('MediaPipe failed, using touch:', e);
+    document.getElementById('status').textContent = 'Touch mode (tap screen to interact)';
+    setTimeout(() => { document.getElementById('status').style.opacity = '0'; }, 5000);
   }
 }
 
