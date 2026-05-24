@@ -944,59 +944,77 @@ function drawHeartShape(ctx, cx, cy, size, angle) {
 }
 
 function spawnHeart(px, py) {
-  if (heartParticles.length >= HEART_MAX) return;
+  if (heartParticles.length >= HEART_MAX) {
+    heartParticles.shift();
+  }
   const c = heartColors[Math.floor(Math.random() * heartColors.length)];
   heartParticles.push({
     x: px, y: py,
-    vx: (Math.random() - 0.5) * 2.5,
-    vy: -(1.5 + Math.random() * 3),
-    size: 10 + Math.random() * 28,
-    rotation: (Math.random() - 0.5) * 0.4,
-    rotSpeed: (Math.random() - 0.5) * 0.04,
-    alpha: 0.7 + Math.random() * 0.3,
+    size: 35 + Math.random() * 40,
+    rotation: (Math.random() - 0.5) * 0.6,
+    alpha: 0.85 + Math.random() * 0.15,
     life: 0,
-    maxLife: 50 + Math.random() * 70,
-    cr: c.r, cg: c.g, cb: c.b
+    maxLife: 90 + Math.random() * 60,
+    cr: c.r, cg: c.g, cb: c.b,
+    scale: 0
   });
 }
+
+let heartSpawnAccum = 0;
 
 function updateAndDrawHearts() {
   if (currentMode !== 'heart') return;
 
   pCtx.globalCompositeOperation = 'source-over';
-  pCtx.fillStyle = 'rgba(0,0,0,0.1)';
+  pCtx.fillStyle = 'rgba(0,0,0,0.06)';
   pCtx.fillRect(0, 0, pW, pH);
   pCtx.globalCompositeOperation = 'lighter';
 
+  let anyFinger = false;
   for (let i = 0; i < 10; i++) {
-    if (fingers[i*3+2] > 0.5 && Math.random() < 0.35) {
-      spawnHeart(fingers[i*3] * pW, fingers[i*3+1] * pH);
+    if (fingers[i*3+2] > 0.5) {
+      anyFinger = true;
+      const fx = fingers[i*3] * pW;
+      const fy = fingers[i*3+1] * pH;
+      const pfx = prevFingers[i*3] * pW;
+      const pfy = prevFingers[i*3+1] * pH;
+      const dx = fx - pfx, dy = fy - pfy;
+      const dist = Math.sqrt(dx*dx + dy*dy);
+      if (dist > 8) {
+        const steps = Math.min(Math.floor(dist / 20), 4);
+        for (let s = 0; s <= steps; s++) {
+          const t = steps > 0 ? s / steps : 0;
+          spawnHeart(pfx + dx * t, pfy + dy * t);
+        }
+      } else {
+        heartSpawnAccum += 0.15;
+        if (heartSpawnAccum >= 1) {
+          heartSpawnAccum -= 1;
+          spawnHeart(fx, fy);
+        }
+      }
     }
   }
+  if (!anyFinger) heartSpawnAccum = 0;
 
   for (let i = heartParticles.length - 1; i >= 0; i--) {
     const h = heartParticles[i];
     h.life++;
     if (h.life > h.maxLife) { heartParticles.splice(i, 1); continue; }
-    h.x += h.vx;
-    h.y += h.vy;
-    h.vy *= 0.985;
-    h.vx += (Math.random() - 0.5) * 0.2;
-    h.rotation += h.rotSpeed;
 
     const lifeRatio = h.life / h.maxLife;
-    const fadeIn = Math.min(h.life / 8, 1);
-    const fadeOut = 1 - lifeRatio * lifeRatio;
-    const a = h.alpha * fadeIn * fadeOut;
+    h.scale = Math.min(h.life / 6, 1);
+    const fadeOut = 1 - lifeRatio * lifeRatio * lifeRatio;
+    const a = h.alpha * fadeOut;
     if (a < 0.01) continue;
 
-    pCtx.fillStyle = `rgba(${h.cr},${h.cg},${h.cb},${a})`;
-    drawHeartShape(pCtx, h.x, h.y, h.size, h.rotation);
+    const drawSize = h.size * h.scale;
 
-    if (h.size > 18) {
-      pCtx.fillStyle = `rgba(${h.cr},${h.cg},${h.cb},${a * 0.12})`;
-      drawHeartShape(pCtx, h.x, h.y, h.size * 1.8, h.rotation);
-    }
+    pCtx.fillStyle = `rgba(${h.cr},${h.cg},${h.cb},${a * 0.15})`;
+    drawHeartShape(pCtx, h.x, h.y, drawSize * 1.6, h.rotation);
+
+    pCtx.fillStyle = `rgba(${h.cr},${h.cg},${h.cb},${a})`;
+    drawHeartShape(pCtx, h.x, h.y, drawSize, h.rotation);
   }
 }
 // ========== END HEART ==========
