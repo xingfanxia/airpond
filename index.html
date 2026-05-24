@@ -46,7 +46,7 @@ canvas{display:block;width:100%;height:100%}
 <div id="ui">
   <button id="btn-crystal" class="active">Crystal</button>
   <button id="btn-star">Starlight</button>
-  <button id="btn-portal">Portal</button>
+  <button id="btn-heart">Heart ❤️</button>
   <button id="btn-pulse">Pulse</button>
 </div>
 
@@ -61,7 +61,7 @@ const extLinF = gl.getExtension('OES_texture_float_linear');
 const extLinH = gl.getExtension('OES_texture_half_float_linear');
 
 let W, H, simW, simH;
-let currentMode = 'crystal'; // 'crystal', 'starlight', 'portal', or 'pulse'
+let currentMode = 'crystal'; // 'crystal', 'starlight', 'heart', or 'pulse'
 let facingMode = 'user';
 let videoReady = false;
 let handsReady = false;
@@ -69,32 +69,19 @@ let handsReady = false;
 const fingers = new Float32Array(30);
 const prevFingers = new Float32Array(30);
 
-// ========== PORTAL STATE ==========
-let portalOpen = 0.0;       // 0 = closed, 1 = fully open (animated)
-let portalCx = 0.5;         // hand center X (normalized)
-let portalCy = 0.5;         // hand center Y (normalized)
-let portalSpread = 0.0;     // hand spread factor (fingers apart = bigger)
-let portalHandPresent = false;
-let portalRimParticles = [];
-const PORTAL_RIM_N = 160;
-for (let i = 0; i < PORTAL_RIM_N; i++) {
-  portalRimParticles.push({
-    angle: Math.random() * Math.PI * 2,
-    speed: 0.2 + Math.random() * 0.8,
-    r: 0.6 + Math.random() * 2.2,
-    offset: 0.95 + Math.random() * 0.1,
-    phase: Math.random() * Math.PI * 2,
-    cr: 0, cg: 0, cb: 0
-  });
-}
-// Bright teal/white/gold frame colors
-for (const p of portalRimParticles) {
-  const t = Math.random();
-  if (t < 0.40) { p.cr=120; p.cg=220; p.cb=255; }      // bright teal
-  else if (t < 0.65) { p.cr=220; p.cg=235; p.cb=255; }  // near-white
-  else if (t < 0.82) { p.cr=255; p.cg=210; p.cb=140; }  // warm gold
-  else { p.cr=180; p.cg=255; p.cb=220; }                 // mint
-}
+// ========== HEART STATE ==========
+let heartParticles = [];
+const HEART_MAX = 200;
+const heartColors = [
+  {r:255, g:100, b:140},   // bright pink
+  {r:255, g:150, b:175},   // soft pink
+  {r:255, g:180, b:200},   // light pink
+  {r:255, g:80,  b:120},   // hot pink
+  {r:255, g:200, b:80},    // gold
+  {r:255, g:220, b:120},   // light gold
+  {r:255, g:215, b:0},     // pure gold
+  {r:255, g:170, b:130},   // peach
+];
 
 // ========== PULSE STATE ==========
 let pulseAudioCtx = null;
@@ -883,164 +870,7 @@ void main(){
   gl_FragColor = vec4(clamp(color, 0.0, 1.0), 1.0);
 }`;
 
-// --- Portal shader ---
-const portalFS = `
-precision highp float;
-uniform sampler2D u_camera;
-uniform float u_mirror;
-uniform float u_time;
-uniform float u_portalOpen;
-uniform vec2 u_portalCenter;
-uniform float u_portalSpread;
-uniform vec2 u_resolution;
-
-float hash(vec2 p) {
-  return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
-}
-
-float noise(vec2 p) {
-  vec2 i = floor(p);
-  vec2 f = fract(p);
-  f = f * f * (3.0 - 2.0 * f);
-  float a = hash(i);
-  float b = hash(i + vec2(1.0, 0.0));
-  float c = hash(i + vec2(0.0, 1.0));
-  float d = hash(i + vec2(1.0, 1.0));
-  return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
-}
-
-float fbm(vec2 p) {
-  float v = 0.0;
-  float amp = 0.5;
-  for (int i = 0; i < 4; i++) {
-    v += amp * noise(p);
-    p *= 2.1;
-    amp *= 0.5;
-  }
-  return v;
-}
-
-varying vec2 v_uv;
-
-void main() {
-  vec2 camUV = vec2(mix(v_uv.x, 1.0 - v_uv.x, u_mirror), v_uv.y);
-  vec3 cam = texture2D(u_camera, camUV).rgb;
-
-  if (u_portalOpen < 0.005) {
-    gl_FragColor = vec4(cam, 1.0);
-    return;
-  }
-
-  float aspect = u_resolution.x / u_resolution.y;
-  vec2 uv = v_uv;
-  vec2 center = u_portalCenter;
-
-  // Door-shaped portal: wide and tall
-  float baseRx = 0.18 + u_portalSpread * 0.08;
-  float baseRy = baseRx * 2.0;
-  float rx = baseRx * u_portalOpen;
-  float ry = baseRy * u_portalOpen;
-
-  // Superellipse for rounded-rectangle door shape (n=3.5)
-  vec2 d = (uv - center) * vec2(aspect, 1.0);
-  vec2 nd = abs(d) / vec2(rx * aspect, ry);
-  float sn = 3.5;
-  float superDist = pow(pow(nd.x, sn) + pow(nd.y, sn), 1.0 / sn);
-
-  // Arch top: compress the top portion to round the doorway
-  float archBias = smoothstep(0.0, 0.8, -d.y / max(ry, 0.001)) * 0.15;
-  superDist -= archBias;
-
-  // Sharp frame edges
-  float frameWidth = 0.06;
-  float innerEdge = 1.0;
-  float insideMask = 1.0 - smoothstep(innerEdge - 0.02, innerEdge + 0.01, superDist);
-  float frameMask = smoothstep(innerEdge - 0.03, innerEdge, superDist) *
-                    (1.0 - smoothstep(innerEdge + frameWidth, innerEdge + frameWidth + 0.04, superDist));
-  float outerGlowMask = smoothstep(innerEdge + frameWidth + 0.25, innerEdge + frameWidth, superDist) *
-                        (1.0 - frameMask) * (1.0 - insideMask);
-
-  // --- Bright ethereal world inside the portal ---
-  float t = u_time * 0.2;
-  vec2 portalUV = (uv - center) / vec2(rx / aspect, ry) * 0.5 + 0.5;
-
-  // Perspective depth: converging lines
-  float depthY = (uv.y - center.y + ry) / (2.0 * ry);
-  float perspective = 1.0 + depthY * 2.0;
-
-  // Warm luminous base — golden hour forest
-  float n1 = fbm(vec2(portalUV.x * 3.0, portalUV.y * perspective * 2.0) + vec2(t * 0.15, t * 0.08));
-  float n2 = fbm(vec2(portalUV.x * 5.0, portalUV.y * perspective * 4.0) - vec2(t * 0.1, -t * 0.12));
-  float n3 = fbm(vec2(portalUV.x * 2.0 + t * 0.05, portalUV.y * 1.5 + t * 0.03));
-
-  // Golden light gradient from top
-  vec3 world = mix(vec3(0.95, 0.75, 0.45), vec3(0.4, 0.55, 0.7), depthY * 0.8);
-
-  // Warm volumetric light rays from above
-  float rayAngle = portalUV.x * 6.28 + t * 0.3;
-  float rays = pow(max(0.0, sin(rayAngle * 3.0 + n1 * 2.0)), 4.0) * (1.0 - depthY);
-  world += vec3(1.0, 0.85, 0.5) * rays * 0.35;
-
-  // Misty depth layers
-  world = mix(world, vec3(0.7, 0.8, 0.95), smoothstep(0.3, 0.9, n1) * 0.4);
-  world += vec3(0.3, 0.45, 0.2) * smoothstep(0.4, 0.7, n2) * 0.3 * depthY;
-
-  // Floating dust motes
-  float moteNoise = hash(floor(uv * u_resolution * 0.15) + floor(t * 0.3));
-  float moteBright = smoothstep(0.97, 0.995, moteNoise);
-  float moteFloat = 0.5 + 0.5 * sin(moteNoise * 50.0 + u_time * 1.5);
-  world += vec3(1.0, 0.95, 0.8) * moteBright * moteFloat * 0.8;
-
-  // Soft radial glow from center
-  float cdist = length((uv - center) / vec2(rx / aspect * 2.0, ry * 2.0));
-  world += vec3(0.2, 0.15, 0.05) * exp(-cdist * 3.0);
-
-  // Overall brightness boost
-  world *= 1.1;
-
-  // --- Bright solid frame with energy flow ---
-  float angle = atan(d.y, d.x);
-  float energyFlow = 0.5 + 0.5 * sin(angle * 8.0 - u_time * 3.0 + n3 * 4.0);
-  float framePulse = 0.85 + 0.15 * sin(u_time * 2.0);
-
-  // Teal-to-white frame (bright, clearly visible)
-  vec3 frameColor = mix(vec3(0.4, 0.85, 1.0), vec3(0.95, 0.95, 1.0), energyFlow * 0.6);
-  frameColor *= framePulse;
-  float frameIntensity = frameMask * 1.2 * u_portalOpen;
-
-  // Inner edge highlight: thin bright line
-  float innerLine = smoothstep(innerEdge + 0.005, innerEdge, superDist) *
-                    smoothstep(innerEdge - 0.04, innerEdge - 0.015, superDist);
-  vec3 innerGlow = vec3(0.9, 0.95, 1.0) * innerLine * 1.5 * u_portalOpen;
-
-  // Outer halo
-  vec3 haloColor = vec3(0.3, 0.6, 0.8) * outerGlowMask * 0.2 * u_portalOpen;
-
-  // Chromatic aberration near frame
-  float chromaShift = frameMask * 0.006 * u_portalOpen;
-  float camR = texture2D(u_camera, camUV + vec2(chromaShift, 0.0)).r;
-  float camB = texture2D(u_camera, camUV - vec2(chromaShift, 0.0)).b;
-  vec3 camChroma = vec3(camR, cam.g, camB);
-  vec3 outsideCam = mix(cam, camChroma, frameMask + outerGlowMask);
-
-  // --- Final composition ---
-  vec3 color = outsideCam;
-  color = mix(color, world, insideMask);
-  color += frameColor * frameIntensity;
-  color += innerGlow;
-  color += haloColor;
-
-  gl_FragColor = vec4(clamp(color, 0.0, 1.0), 1.0);
-}`;
-
-let portalProg, portalU;
-function initPortalShader() {
-  portalProg = createProgram(quadVS, portalFS);
-  portalU = getUniforms(portalProg, [
-    'u_camera', 'u_mirror', 'u_time',
-    'u_portalOpen', 'u_portalCenter', 'u_portalSpread', 'u_resolution'
-  ]);
-}
+// (portal shader removed — replaced by heart mode)
 
 // ========== PULSE SHADER ==========
 const pulseFS = `
@@ -1094,95 +924,82 @@ function initPulseShader() {
   ]);
 }
 
-// ========== PORTAL 2D OVERLAY (rim particles along door frame) ==========
+// ========== HEART 2D OVERLAY ==========
 
-// Superellipse point for door frame
-function superEllipsePoint(angle, rx, ry, n) {
-  const ca = Math.cos(angle), sa = Math.sin(angle);
-  const x = Math.sign(ca) * rx * Math.pow(Math.abs(ca), 2.0 / n);
-  const y = Math.sign(sa) * ry * Math.pow(Math.abs(sa), 2.0 / n);
-  return [x, y];
+function drawHeartShape(ctx, cx, cy, size, angle) {
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.rotate(angle);
+  const w = size, h = size;
+  const x = -w / 2, y = -h / 2;
+  ctx.beginPath();
+  ctx.moveTo(x + w / 2, y + h);
+  ctx.bezierCurveTo(x + w / 2, y + h * 0.75, x, y + h * 0.6, x, y + h * 0.35);
+  ctx.bezierCurveTo(x, y, x + w * 0.35, y, x + w / 2, y + h * 0.25);
+  ctx.bezierCurveTo(x + w * 0.65, y, x + w, y, x + w, y + h * 0.35);
+  ctx.bezierCurveTo(x + w, y + h * 0.6, x + w / 2, y + h * 0.75, x + w / 2, y + h);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
 }
 
-function updatePortalState() {
-  let handCount = 0;
-  let cx = 0, cy = 0;
-  let minX = 1, maxX = 0, minY = 1, maxY = 0;
-  for (let i = 0; i < 10; i++) {
-    if (fingers[i*3+2] > 0.5) {
-      const fx = fingers[i*3], fy = fingers[i*3+1];
-      cx += fx; cy += fy;
-      if (fx < minX) minX = fx;
-      if (fx > maxX) maxX = fx;
-      if (fy < minY) minY = fy;
-      if (fy > maxY) maxY = fy;
-      handCount++;
-    }
-  }
-  if (handCount > 0) {
-    portalHandPresent = true;
-    const tcx = cx / handCount;
-    const tcy = cy / handCount;
-    portalCx += (tcx - portalCx) * 0.12;
-    portalCy += (tcy - portalCy) * 0.12;
-    const spread = Math.max(maxX - minX, maxY - minY);
-    const targetSpread = Math.min(spread * 2.5, 1.0);
-    portalSpread += (targetSpread - portalSpread) * 0.1;
-    portalOpen = Math.min(1.0, portalOpen + 0.035);
-  } else {
-    portalHandPresent = false;
-    portalOpen = Math.max(0.0, portalOpen - 0.02);
-    portalSpread *= 0.95;
-  }
+function spawnHeart(px, py) {
+  if (heartParticles.length >= HEART_MAX) return;
+  const c = heartColors[Math.floor(Math.random() * heartColors.length)];
+  heartParticles.push({
+    x: px, y: py,
+    vx: (Math.random() - 0.5) * 2.5,
+    vy: -(1.5 + Math.random() * 3),
+    size: 10 + Math.random() * 28,
+    rotation: (Math.random() - 0.5) * 0.4,
+    rotSpeed: (Math.random() - 0.5) * 0.04,
+    alpha: 0.7 + Math.random() * 0.3,
+    life: 0,
+    maxLife: 50 + Math.random() * 70,
+    cr: c.r, cg: c.g, cb: c.b
+  });
 }
 
-function drawPortalRim() {
-  if (currentMode !== 'portal') return;
-  if (portalOpen < 0.01) {
-    pCtx.globalCompositeOperation = 'source-over';
-    pCtx.fillStyle = '#000';
-    pCtx.fillRect(0, 0, pW, pH);
-    return;
-  }
+function updateAndDrawHearts() {
+  if (currentMode !== 'heart') return;
 
   pCtx.globalCompositeOperation = 'source-over';
-  pCtx.fillStyle = 'rgba(0,0,0,0.15)';
+  pCtx.fillStyle = 'rgba(0,0,0,0.1)';
   pCtx.fillRect(0, 0, pW, pH);
   pCtx.globalCompositeOperation = 'lighter';
 
-  const cx = portalCx * pW;
-  const cy = portalCy * pH;
-  const baseRx = (0.18 + portalSpread * 0.08) * pW * portalOpen;
-  const baseRy = baseRx * 2.0;
+  for (let i = 0; i < 10; i++) {
+    if (fingers[i*3+2] > 0.5 && Math.random() < 0.35) {
+      spawnHeart(fingers[i*3] * pW, fingers[i*3+1] * pH);
+    }
+  }
 
-  for (const p of portalRimParticles) {
-    p.angle += p.speed * 0.02;
-    const wobble = Math.sin(p.angle * 2.0 + p.phase + time * 1.5) * 0.04;
+  for (let i = heartParticles.length - 1; i >= 0; i--) {
+    const h = heartParticles[i];
+    h.life++;
+    if (h.life > h.maxLife) { heartParticles.splice(i, 1); continue; }
+    h.x += h.vx;
+    h.y += h.vy;
+    h.vy *= 0.985;
+    h.vx += (Math.random() - 0.5) * 0.2;
+    h.rotation += h.rotSpeed;
 
-    // Particles trace the superellipse door frame
-    const [sx, sy] = superEllipsePoint(p.angle, baseRx, baseRy, 3.5);
-    const r = 1.0 + wobble;
-    const px = cx + sx * r;
-    const py = cy + sy * r;
+    const lifeRatio = h.life / h.maxLife;
+    const fadeIn = Math.min(h.life / 8, 1);
+    const fadeOut = 1 - lifeRatio * lifeRatio;
+    const a = h.alpha * fadeIn * fadeOut;
+    if (a < 0.01) continue;
 
-    const fadeIn = Math.min(portalOpen * 3.0, 1.0);
-    const a = (0.35 + 0.45 * Math.sin(p.angle * 2.0 + time * 2.5)) * fadeIn;
-    if (a < 0.02) continue;
+    pCtx.fillStyle = `rgba(${h.cr},${h.cg},${h.cb},${a})`;
+    drawHeartShape(pCtx, h.x, h.y, h.size, h.rotation);
 
-    pCtx.beginPath();
-    pCtx.arc(px, py, p.r * portalOpen * 1.2, 0, TAU);
-    pCtx.fillStyle = `rgba(${p.cr},${p.cg},${p.cb},${a})`;
-    pCtx.fill();
-
-    if (p.r > 1.0) {
-      pCtx.beginPath();
-      pCtx.arc(px, py, p.r * 3.5 * portalOpen, 0, TAU);
-      pCtx.fillStyle = `rgba(${p.cr},${p.cg},${p.cb},${a * 0.15})`;
-      pCtx.fill();
+    if (h.size > 18) {
+      pCtx.fillStyle = `rgba(${h.cr},${h.cg},${h.cb},${a * 0.12})`;
+      drawHeartShape(pCtx, h.x, h.y, h.size * 1.8, h.rotation);
     }
   }
 }
-// ========== END PORTAL ==========
+// ========== END HEART ==========
 
 // ========== PULSE PARTICLE SYSTEM ==========
 function spawnPulseBurst(cx, cy, count, speedMul) {
@@ -1452,7 +1269,6 @@ gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.ST
 
 const simProg = createProgram(quadVS, simFS);
 const renderProg = createProgram(quadVS, renderFS);
-initPortalShader();
 initPulseShader();
 
 function getUniforms(prog, names) {
@@ -1657,26 +1473,7 @@ function render() {
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   gl.viewport(0, 0, W, H);
 
-  if (currentMode === 'portal') {
-    // Portal mode: use portal shader
-    updatePortalState();
-    gl.useProgram(portalProg);
-    gl.bindBuffer(gl.ARRAY_BUFFER, quadBuf);
-    setupAttrib(portalProg);
-
-    gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, camTex);
-    gl.uniform1i(portalU.u_camera, 0);
-
-    gl.uniform1f(portalU.u_mirror, facingMode === 'user' ? 1.0 : 0.0);
-    gl.uniform1f(portalU.u_time, time);
-    gl.uniform1f(portalU.u_portalOpen, portalOpen);
-    gl.uniform2f(portalU.u_portalCenter, portalCx, portalCy);
-    gl.uniform1f(portalU.u_portalSpread, portalSpread);
-    gl.uniform2f(portalU.u_resolution, W, H);
-
-    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-  } else if (currentMode === 'pulse') {
+  if (currentMode === 'pulse') {
     // Pulse mode: audio-reactive shader
     updatePulseAudio();
     gl.useProgram(pulseProg);
@@ -1697,7 +1494,7 @@ function render() {
 
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
   } else {
-    // Crystal / Starlight / Reveal: use render shader
+    // Crystal / Starlight / Heart: use render shader
     gl.useProgram(renderProg);
     gl.bindBuffer(gl.ARRAY_BUFFER, quadBuf);
     setupAttrib(renderProg);
@@ -1729,8 +1526,8 @@ function render() {
   updateHandPts();
   if (currentMode === 'starlight') {
     detectFlick(); updateProjectiles(); drawKungfu();
-  } else if (currentMode === 'portal') {
-    drawPortalRim();
+  } else if (currentMode === 'heart') {
+    updateAndDrawHearts();
   } else if (currentMode === 'pulse') {
     updatePulseEffects();
     drawPulseOverlay();
@@ -1744,14 +1541,14 @@ function render() {
 // --- UI ---
 const btnCrystal = document.getElementById('btn-crystal');
 const btnStar = document.getElementById('btn-star');
-const btnPortal = document.getElementById('btn-portal');
+const btnHeart = document.getElementById('btn-heart');
 const btnPulse = document.getElementById('btn-pulse');
 const hintEl = document.getElementById('hint');
 
 const hints = {
   crystal: 'Touch to create waves',
   starlight: 'Flick to shoot ✨',
-  portal: 'Move your hand to open a portal',
+  heart: 'Move your fingers to create ❤️',
   pulse: 'Let the music move you'
 };
 
@@ -1770,18 +1567,16 @@ function setMode(m) {
   kungfuOn = (m === 'starlight');
   btnCrystal.classList.toggle('active', m === 'crystal');
   btnStar.classList.toggle('active', m === 'starlight');
-  btnPortal.classList.toggle('active', m === 'portal');
+  btnHeart.classList.toggle('active', m === 'heart');
   btnPulse.classList.toggle('active', m === 'pulse');
   hintEl.textContent = hints[m] || '';
   hintEl.style.opacity = '1';
   setTimeout(() => { hintEl.style.opacity = '0'; }, 3000);
   if (m !== 'crystal') clearSimFBOs();
   if (m === 'starlight') { projectiles.length = 0; sparks.length = 0; }
-  // Clean up portal state when switching away
-  if (m !== 'portal') {
-    portalOpen = 0.0;
-    portalSpread = 0.0;
-    portalHandPresent = false;
+  // Clean up heart state when switching away
+  if (m !== 'heart') {
+    heartParticles.length = 0;
   }
   // Clean up pulse state when switching away
   if (m !== 'pulse') {
@@ -1805,7 +1600,7 @@ function setMode(m) {
 
 btnCrystal.onclick = () => setMode('crystal');
 btnStar.onclick = () => setMode('starlight');
-btnPortal.onclick = () => setMode('portal');
+btnHeart.onclick = () => setMode('heart');
 btnPulse.onclick = async () => {
   const ok = await initPulseAudio();
   if (!ok) {
