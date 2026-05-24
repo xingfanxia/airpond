@@ -935,9 +935,9 @@ void main() {
   vec2 uv = v_uv;
   vec2 center = u_portalCenter;
 
-  // Door-shaped portal: wider and much taller
-  float baseRx = 0.09 + u_portalSpread * 0.06;
-  float baseRy = baseRx * 2.8;
+  // Door-shaped portal: wide and tall
+  float baseRx = 0.18 + u_portalSpread * 0.08;
+  float baseRy = baseRx * 2.0;
   float rx = baseRx * u_portalOpen;
   float ry = baseRy * u_portalOpen;
 
@@ -1152,8 +1152,8 @@ function drawPortalRim() {
 
   const cx = portalCx * pW;
   const cy = portalCy * pH;
-  const baseRx = (0.09 + portalSpread * 0.06) * pW * portalOpen;
-  const baseRy = baseRx * 2.8;
+  const baseRx = (0.18 + portalSpread * 0.08) * pW * portalOpen;
+  const baseRy = baseRx * 2.0;
 
   for (const p of portalRimParticles) {
     p.angle += p.speed * 0.02;
