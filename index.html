@@ -47,6 +47,7 @@ canvas{display:block;width:100%;height:100%}
   <button id="btn-crystal" class="active">Crystal</button>
   <button id="btn-star">Starlight</button>
   <button id="btn-portal">Portal</button>
+  <button id="btn-pulse">Pulse</button>
 </div>
 
 <script type="module">
@@ -60,7 +61,7 @@ const extLinF = gl.getExtension('OES_texture_float_linear');
 const extLinH = gl.getExtension('OES_texture_half_float_linear');
 
 let W, H, simW, simH;
-let currentMode = 'crystal'; // 'crystal', 'starlight', or 'portal'
+let currentMode = 'crystal'; // 'crystal', 'starlight', 'portal', or 'pulse'
 let facingMode = 'user';
 let videoReady = false;
 let handsReady = false;
@@ -93,6 +94,150 @@ for (const p of portalRimParticles) {
   else if (t < 0.60) { p.cr=180; p.cg=100; p.cb=255; } // violet
   else if (t < 0.80) { p.cr=255; p.cg=120; p.cb=200; } // magenta
   else { p.cr=120; p.cg=255; p.cb=200; }                // teal
+}
+
+// ========== PULSE STATE ==========
+let pulseAudioCtx = null;
+let pulseAnalyser = null;
+let pulseMicStream = null;
+let pulseFreqData = null;
+let pulseBass = 0, pulseMid = 0, pulseHigh = 0, pulseVol = 0;
+let pulseVolHistory = [];
+const PULSE_VOL_HISTORY = 30;
+let pulsePeak = false;
+let pulseGesture = 'none'; // 'none','open','fist','peace','point'
+let pulsePrevGesture = 'none';
+let pulseGestureChanged = false;
+let pulseHandLandmarks = []; // full 21-landmark arrays per hand
+let pulseParticles = [];
+const PULSE_N = 300;
+let pulseBursts = [];
+let pulseShockwaves = [];
+let pulseBeams = [];
+let pulseFlash = 0;
+let pulseAudioReady = false;
+
+for (let i = 0; i < PULSE_N; i++) {
+  pulseParticles.push({
+    x: 0, y: 0, vx: 0, vy: 0,
+    r: 0, a: 0, life: 0, maxLife: 0,
+    cr: 0, cg: 0, cb: 0,
+    phase: Math.random() * Math.PI * 2,
+    baseSpeed: 0
+  });
+}
+
+function initPulseParticle(p, w, h) {
+  p.x = Math.random() * w;
+  p.y = Math.random() * h;
+  p.baseSpeed = 0.3 + Math.random() * 1.5;
+  const angle = Math.random() * TAU;
+  p.vx = Math.cos(angle) * p.baseSpeed;
+  p.vy = Math.sin(angle) * p.baseSpeed;
+  p.r = 1 + Math.random() * 3;
+  p.a = 0.3 + Math.random() * 0.5;
+  p.life = 0;
+  p.maxLife = 200 + Math.random() * 400;
+  p.phase = Math.random() * TAU;
+  p.cr = 255; p.cg = 180; p.cb = 100;
+}
+
+async function initPulseAudio() {
+  if (pulseAudioReady) return true;
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({audio: true});
+    pulseMicStream = stream;
+    pulseAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    pulseAnalyser = pulseAudioCtx.createAnalyser();
+    pulseAnalyser.fftSize = 256;
+    const source = pulseAudioCtx.createMediaStreamSource(stream);
+    source.connect(pulseAnalyser);
+    pulseFreqData = new Uint8Array(pulseAnalyser.frequencyBinCount);
+    pulseVolHistory = [];
+    pulseAudioReady = true;
+    return true;
+  } catch(e) {
+    console.warn('Mic access denied:', e);
+    return false;
+  }
+}
+
+function updatePulseAudio() {
+  if (!pulseAnalyser || !pulseFreqData) {
+    pulseBass = 0; pulseMid = 0; pulseHigh = 0; pulseVol = 0; pulsePeak = false;
+    return;
+  }
+  pulseAnalyser.getByteFrequencyData(pulseFreqData);
+  const binCount = pulseFreqData.length;
+  const nyquist = pulseAudioCtx.sampleRate / 2;
+  const binWidth = nyquist / binCount;
+  let bassSum = 0, bassN = 0;
+  let midSum = 0, midN = 0;
+  let highSum = 0, highN = 0;
+  for (let i = 0; i < binCount; i++) {
+    const freq = i * binWidth;
+    const val = pulseFreqData[i] / 255;
+    if (freq < 300) { bassSum += val; bassN++; }
+    else if (freq < 2000) { midSum += val; midN++; }
+    else { highSum += val; highN++; }
+  }
+  pulseBass = bassN > 0 ? bassSum / bassN : 0;
+  pulseMid = midN > 0 ? midSum / midN : 0;
+  pulseHigh = highN > 0 ? highSum / highN : 0;
+  pulseVol = (pulseBass + pulseMid + pulseHigh) / 3;
+
+  pulseVolHistory.push(pulseVol);
+  if (pulseVolHistory.length > PULSE_VOL_HISTORY) pulseVolHistory.shift();
+  const avgVol = pulseVolHistory.reduce((a, b) => a + b, 0) / pulseVolHistory.length;
+  pulsePeak = pulseVol > avgVol * 2.5 && pulseVol > 0.15;
+}
+
+function detectPulseGesture() {
+  pulsePrevGesture = pulseGesture;
+  pulseGestureChanged = false;
+  if (pulseHandLandmarks.length === 0) { pulseGesture = 'none'; return; }
+  const lm = pulseHandLandmarks[0];
+  if (!lm || lm.length < 21) { pulseGesture = 'none'; return; }
+
+  const wrist = lm[0];
+  const isRightHand = lm[17].x < lm[5].x;
+
+  function fingerExtended(tipIdx, pipIdx) {
+    return lm[tipIdx].y < lm[pipIdx].y;
+  }
+  function thumbExtended() {
+    if (isRightHand) return lm[4].x < lm[3].x;
+    return lm[4].x > lm[3].x;
+  }
+
+  const thumb = thumbExtended();
+  const index = fingerExtended(8, 6);
+  const middle = fingerExtended(12, 10);
+  const ring = fingerExtended(16, 14);
+  const pinky = fingerExtended(20, 18);
+
+  const extended = [thumb, index, middle, ring, pinky];
+  const count = extended.filter(Boolean).length;
+
+  let newGesture = 'none';
+  if (count >= 4) newGesture = 'open';
+  else if (count <= 1 && !index && !middle && !ring && !pinky) newGesture = 'fist';
+  else if (index && middle && !ring && !pinky) newGesture = 'peace';
+  else if (index && !middle && !ring && !pinky) newGesture = 'point';
+
+  if (newGesture !== 'none') pulseGesture = newGesture;
+  pulseGestureChanged = (pulseGesture !== pulsePrevGesture && pulsePrevGesture !== 'none');
+}
+
+function detectClap() {
+  if (pulseHandLandmarks.length < 2) return false;
+  const h1 = pulseHandLandmarks[0];
+  const h2 = pulseHandLandmarks[1];
+  if (!h1 || !h2 || h1.length < 21 || h2.length < 21) return false;
+  const dx = h1[9].x - h2[9].x;
+  const dy = h1[9].y - h2[9].y;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  return dist < 0.08;
 }
 
 // ========== REVEAL MASK SYSTEM ==========
@@ -885,6 +1030,58 @@ function initPortalShader() {
   ]);
 }
 
+// ========== PULSE SHADER ==========
+const pulseFS = `
+precision highp float;
+uniform sampler2D u_camera;
+uniform float u_mirror;
+uniform float u_time;
+uniform float u_bass;
+uniform float u_mid;
+uniform float u_high;
+uniform float u_vol;
+uniform vec2 u_resolution;
+varying vec2 v_uv;
+void main(){
+  vec2 camUV = vec2(mix(v_uv.x, 1.0 - v_uv.x, u_mirror), v_uv.y);
+  vec3 cam = texture2D(u_camera, camUV).rgb;
+
+  // Audio-reactive vignette
+  vec2 center = v_uv - 0.5;
+  float aspect = u_resolution.x / u_resolution.y;
+  center.x *= aspect;
+  float dist = length(center);
+  float bassPulse = u_bass * 0.35;
+  float vignetteRadius = 0.65 + bassPulse * 0.2;
+  float vignette = 1.0 - smoothstep(vignetteRadius, vignetteRadius + 0.45, dist);
+  cam *= vignette;
+
+  // Warm color grade on bass hits
+  float warmth = u_bass * 0.25;
+  cam.r += warmth * 0.12;
+  cam.g += warmth * 0.04;
+  cam.b -= warmth * 0.06;
+
+  // Slight energy tint from overall volume
+  float energy = u_vol * 0.15;
+  cam += vec3(energy * 0.05, energy * 0.02, energy * 0.08);
+
+  // Subtle scan line for texture
+  float scanline = 0.97 + 0.03 * sin(v_uv.y * u_resolution.y * 0.5 + u_time * 2.0);
+  cam *= scanline;
+
+  gl_FragColor = vec4(clamp(cam, 0.0, 1.0), 1.0);
+}`;
+
+let pulseProg, pulseU;
+function initPulseShader() {
+  pulseProg = createProgram(quadVS, pulseFS);
+  pulseU = getUniforms(pulseProg, [
+    'u_camera', 'u_mirror', 'u_time',
+    'u_bass', 'u_mid', 'u_high', 'u_vol', 'u_resolution'
+  ]);
+}
+
 // ========== PORTAL 2D OVERLAY (rim particles) ==========
 function updatePortalState() {
   // Detect if any hand is present
@@ -970,6 +1167,267 @@ function drawPortalRim() {
 }
 // ========== END PORTAL ==========
 
+// ========== PULSE PARTICLE SYSTEM ==========
+function spawnPulseBurst(cx, cy, count, speedMul) {
+  for (let i = 0; i < count; i++) {
+    const angle = TAU * i / count + (Math.random() - 0.5) * 0.3;
+    const speed = (3 + Math.random() * 8) * speedMul;
+    const energy = pulseBass + pulseMid * 0.5;
+    const r = Math.random();
+    let cr, cg, cb;
+    if (energy > 0.5) { cr = 100 + r * 80; cg = 180 + r * 75; cb = 255; }
+    else { cr = 255; cg = 140 + r * 80; cb = 60 + r * 60; }
+    pulseBursts.push({
+      x: cx, y: cy,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+      r: 1.5 + Math.random() * 3,
+      a: 0.8 + Math.random() * 0.2,
+      life: 0, maxLife: 30 + Math.random() * 40,
+      cr, cg, cb
+    });
+  }
+}
+
+function spawnPulseShockwave(cx, cy) {
+  const energy = pulseBass + pulseMid * 0.5;
+  const r = Math.random();
+  let cr, cg, cb;
+  if (energy > 0.4) { cr = 120; cg = 200; cb = 255; }
+  else { cr = 255; cg = 160 + r * 60; cb = 80; }
+  pulseShockwaves.push({
+    x: cx, y: cy,
+    radius: 5, maxRadius: 120 + pulseBass * 80,
+    life: 0, maxLife: 35,
+    lineWidth: 3 + pulseBass * 4,
+    cr, cg, cb
+  });
+}
+
+function spawnPulseBeams(tips) {
+  for (const tip of tips) {
+    pulseBeams.push({
+      x: tip.x, y: tip.y,
+      angle: -Math.PI / 2 + (Math.random() - 0.5) * 0.3,
+      length: 0, maxLength: 200 + pulseMid * 150,
+      life: 0, maxLife: 25,
+      width: 2 + pulseBass * 3,
+      cr: 180, cg: 120, cb: 255
+    });
+  }
+}
+
+function updatePulseEffects() {
+  const handCenters = [];
+  for (const lm of pulseHandLandmarks) {
+    if (!lm || lm.length < 21) continue;
+    let sx = lm[9].x;
+    if (facingMode === 'user') sx = 1.0 - sx;
+    handCenters.push({x: sx * pW, y: lm[9].y * pH});
+  }
+
+  // Gesture-triggered effects
+  if (pulseGestureChanged && handCenters.length > 0) {
+    const hc = handCenters[0];
+    if (pulseGesture === 'open') {
+      spawnPulseBurst(hc.x, hc.y, 40, 1.0);
+    } else if (pulseGesture === 'fist') {
+      spawnPulseShockwave(hc.x, hc.y);
+    } else if (pulseGesture === 'peace') {
+      const lm = pulseHandLandmarks[0];
+      if (lm && lm.length >= 21) {
+        let ix = lm[8].x, mx = lm[12].x;
+        if (facingMode === 'user') { ix = 1.0 - ix; mx = 1.0 - mx; }
+        spawnPulseBeams([
+          {x: ix * pW, y: lm[8].y * pH},
+          {x: mx * pW, y: lm[12].y * pH}
+        ]);
+      }
+    }
+  }
+
+  // Clap detection
+  if (detectClap()) {
+    pulseFlash = 1.0;
+    const cx = pW * 0.5, cy = pH * 0.5;
+    spawnPulseBurst(cx, cy, 80, 2.0);
+    spawnPulseShockwave(cx, cy);
+  }
+
+  // Peak (clap/hit) audio burst at hand positions
+  if (pulsePeak && handCenters.length > 0) {
+    for (const hc of handCenters) {
+      spawnPulseBurst(hc.x, hc.y, 20, 1.5);
+    }
+  }
+
+  // Update ambient particles
+  for (const p of pulseParticles) {
+    if (p.life >= p.maxLife || p.x < -20 || p.x > pW + 20 || p.y < -20 || p.y > pH + 20) {
+      initPulseParticle(p, pW, pH);
+    }
+    // Size pulsates with bass
+    const sizeScale = 1 + pulseBass * 2;
+    // Speed varies with mid
+    const speedScale = 0.5 + pulseMid * 3;
+
+    // Attract/repel near hand
+    for (const hc of handCenters) {
+      const dx = p.x - hc.x, dy = p.y - hc.y;
+      const d2 = dx * dx + dy * dy;
+      const R = 180;
+      if (d2 < R * R && d2 > 4) {
+        const d = Math.sqrt(d2);
+        const force = (R - d) / R;
+        const dir = pulseBass > 0.4 ? 1 : -0.5;
+        p.vx += (dx / d) * force * dir * 2;
+        p.vy += (dy / d) * force * dir * 2;
+      }
+    }
+
+    p.vx += Math.sin(p.phase + time * 0.5) * 0.05 * speedScale;
+    p.vy += Math.cos(p.phase + time * 0.7) * 0.05 * speedScale;
+    p.x += p.vx * speedScale;
+    p.y += p.vy * speedScale;
+    p.vx *= 0.97;
+    p.vy *= 0.97;
+    p.life++;
+
+    // Color shifts with audio energy
+    const energy = pulseBass + pulseMid + pulseHigh;
+    if (energy > 1.0) {
+      p.cr = 100 + energy * 40; p.cg = 160 + energy * 30; p.cb = 255;
+    } else {
+      p.cr = 255; p.cg = 160 + energy * 50; p.cb = 80 + energy * 40;
+    }
+    p.currentR = p.r * sizeScale;
+  }
+
+  // Update bursts
+  for (let i = pulseBursts.length - 1; i >= 0; i--) {
+    const b = pulseBursts[i];
+    b.x += b.vx; b.y += b.vy;
+    b.vx *= 0.94; b.vy *= 0.94;
+    b.vy += 0.15;
+    b.life++;
+    if (b.life > b.maxLife) pulseBursts.splice(i, 1);
+  }
+
+  // Update shockwaves
+  for (let i = pulseShockwaves.length - 1; i >= 0; i--) {
+    const s = pulseShockwaves[i];
+    const t = s.life / s.maxLife;
+    s.radius = s.maxRadius * (1 - Math.pow(1 - t, 3));
+    s.life++;
+    if (s.life > s.maxLife) pulseShockwaves.splice(i, 1);
+  }
+
+  // Update beams
+  for (let i = pulseBeams.length - 1; i >= 0; i--) {
+    const b = pulseBeams[i];
+    const t = b.life / b.maxLife;
+    b.length = b.maxLength * Math.min(t * 3, 1);
+    b.life++;
+    if (b.life > b.maxLife) pulseBeams.splice(i, 1);
+  }
+
+  // Decay flash
+  pulseFlash *= 0.85;
+}
+
+function drawPulseOverlay() {
+  if (currentMode !== 'pulse') return;
+  pCtx.globalCompositeOperation = 'source-over';
+  pCtx.fillStyle = 'rgba(0,0,0,0.08)';
+  pCtx.fillRect(0, 0, pW, pH);
+
+  // Flash
+  if (pulseFlash > 0.05) {
+    pCtx.globalCompositeOperation = 'lighter';
+    pCtx.fillStyle = `rgba(255,255,255,${pulseFlash * 0.4})`;
+    pCtx.fillRect(0, 0, pW, pH);
+  }
+
+  pCtx.globalCompositeOperation = 'lighter';
+
+  // Ambient particles
+  for (const p of pulseParticles) {
+    const fadeIn = Math.min(p.life / 20, 1);
+    const fadeOut = p.life > p.maxLife - 40 ? Math.max(0, (p.maxLife - p.life) / 40) : 1;
+    const twinkle = 0.7 + 0.3 * Math.sin(p.life * 0.05 + p.phase);
+    const a = p.a * fadeIn * fadeOut * twinkle;
+    if (a < 0.02) continue;
+    const r = p.currentR || p.r;
+    pCtx.beginPath();
+    pCtx.arc(p.x, p.y, r, 0, TAU);
+    pCtx.fillStyle = `rgba(${p.cr|0},${p.cg|0},${p.cb|0},${a})`;
+    pCtx.fill();
+    if (r > 2) {
+      pCtx.beginPath();
+      pCtx.arc(p.x, p.y, r * 3, 0, TAU);
+      pCtx.fillStyle = `rgba(${p.cr|0},${p.cg|0},${p.cb|0},${a * 0.08})`;
+      pCtx.fill();
+    }
+  }
+
+  // Bursts
+  for (const b of pulseBursts) {
+    const a = Math.max(0, 1 - b.life / b.maxLife) * b.a;
+    if (a < 0.02) continue;
+    pCtx.beginPath();
+    pCtx.arc(b.x, b.y, b.r, 0, TAU);
+    pCtx.fillStyle = `rgba(${b.cr|0},${b.cg|0},${b.cb|0},${a})`;
+    pCtx.fill();
+    pCtx.beginPath();
+    pCtx.arc(b.x, b.y, b.r * 2.5, 0, TAU);
+    pCtx.fillStyle = `rgba(${b.cr|0},${b.cg|0},${b.cb|0},${a * 0.15})`;
+    pCtx.fill();
+  }
+
+  // Shockwaves
+  for (const s of pulseShockwaves) {
+    const a = Math.max(0, 1 - s.life / s.maxLife);
+    if (a < 0.02) continue;
+    pCtx.beginPath();
+    pCtx.arc(s.x, s.y, s.radius, 0, TAU);
+    pCtx.strokeStyle = `rgba(${s.cr},${s.cg},${s.cb},${a * 0.7})`;
+    pCtx.lineWidth = s.lineWidth * a;
+    pCtx.stroke();
+    // Outer glow ring
+    pCtx.beginPath();
+    pCtx.arc(s.x, s.y, s.radius, 0, TAU);
+    pCtx.strokeStyle = `rgba(${s.cr},${s.cg},${s.cb},${a * 0.15})`;
+    pCtx.lineWidth = s.lineWidth * a * 4;
+    pCtx.stroke();
+  }
+
+  // Beams
+  for (const b of pulseBeams) {
+    const a = Math.max(0, 1 - b.life / b.maxLife);
+    if (a < 0.02) continue;
+    const ex = b.x + Math.cos(b.angle) * b.length;
+    const ey = b.y + Math.sin(b.angle) * b.length;
+    const grad = pCtx.createLinearGradient(b.x, b.y, ex, ey);
+    grad.addColorStop(0, `rgba(${b.cr},${b.cg},${b.cb},${a * 0.9})`);
+    grad.addColorStop(0.6, `rgba(${b.cr},${b.cg},${b.cb},${a * 0.4})`);
+    grad.addColorStop(1, `rgba(${b.cr},${b.cg},${b.cb},0)`);
+    pCtx.beginPath();
+    pCtx.moveTo(b.x, b.y);
+    pCtx.lineTo(ex, ey);
+    pCtx.strokeStyle = grad;
+    pCtx.lineWidth = b.width * a;
+    pCtx.stroke();
+    // Core glow
+    pCtx.beginPath();
+    pCtx.moveTo(b.x, b.y);
+    pCtx.lineTo(ex, ey);
+    pCtx.strokeStyle = `rgba(255,255,255,${a * 0.3})`;
+    pCtx.lineWidth = b.width * a * 0.3;
+    pCtx.stroke();
+  }
+}
+// ========== END PULSE ==========
+
 // --- GL setup ---
 const quadBuf = gl.createBuffer();
 gl.bindBuffer(gl.ARRAY_BUFFER, quadBuf);
@@ -978,6 +1436,7 @@ gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.ST
 const simProg = createProgram(quadVS, simFS);
 const renderProg = createProgram(quadVS, renderFS);
 initPortalShader();
+initPulseShader();
 
 function getUniforms(prog, names) {
   const u = {};
@@ -1103,7 +1562,10 @@ const FINGERTIPS = [4, 8, 12, 16, 20];
 function onHandResults(results) {
   prevFingers.set(fingers);
   fingers.fill(0);
-  if (!results.multiHandLandmarks) return;
+  if (!results.multiHandLandmarks) {
+    if (currentMode === 'pulse') { pulseHandLandmarks = []; detectPulseGesture(); }
+    return;
+  }
   let idx = 0;
   for (let h = 0; h < results.multiHandLandmarks.length && h < 2; h++) {
     const lm = results.multiHandLandmarks[h];
@@ -1118,6 +1580,14 @@ function onHandResults(results) {
       if (idx >= 10) break;
     }
     if (idx >= 10) break;
+  }
+  // Capture full landmarks for Pulse gesture recognition
+  if (currentMode === 'pulse') {
+    pulseHandLandmarks = [];
+    for (let h = 0; h < results.multiHandLandmarks.length && h < 2; h++) {
+      pulseHandLandmarks.push(results.multiHandLandmarks[h].map(l => ({x:l.x, y:l.y, z:l.z})));
+    }
+    detectPulseGesture();
   }
 }
 
@@ -1189,6 +1659,26 @@ function render() {
     gl.uniform2f(portalU.u_resolution, W, H);
 
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  } else if (currentMode === 'pulse') {
+    // Pulse mode: audio-reactive shader
+    updatePulseAudio();
+    gl.useProgram(pulseProg);
+    gl.bindBuffer(gl.ARRAY_BUFFER, quadBuf);
+    setupAttrib(pulseProg);
+
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, camTex);
+    gl.uniform1i(pulseU.u_camera, 0);
+
+    gl.uniform1f(pulseU.u_mirror, facingMode === 'user' ? 1.0 : 0.0);
+    gl.uniform1f(pulseU.u_time, time);
+    gl.uniform1f(pulseU.u_bass, pulseBass);
+    gl.uniform1f(pulseU.u_mid, pulseMid);
+    gl.uniform1f(pulseU.u_high, pulseHigh);
+    gl.uniform1f(pulseU.u_vol, pulseVol);
+    gl.uniform2f(pulseU.u_resolution, W, H);
+
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
   } else {
     // Crystal / Starlight / Reveal: use render shader
     gl.useProgram(renderProg);
@@ -1224,6 +1714,9 @@ function render() {
     detectFlick(); updateProjectiles(); drawKungfu();
   } else if (currentMode === 'portal') {
     drawPortalRim();
+  } else if (currentMode === 'pulse') {
+    updatePulseEffects();
+    drawPulseOverlay();
   } else {
     pCtx.globalCompositeOperation = 'source-over';
     pCtx.fillStyle = '#000';
@@ -1235,12 +1728,14 @@ function render() {
 const btnCrystal = document.getElementById('btn-crystal');
 const btnStar = document.getElementById('btn-star');
 const btnPortal = document.getElementById('btn-portal');
+const btnPulse = document.getElementById('btn-pulse');
 const hintEl = document.getElementById('hint');
 
 const hints = {
   crystal: 'Touch to create waves',
   starlight: 'Flick to shoot ✨',
-  portal: 'Move your hand to open a portal'
+  portal: 'Move your hand to open a portal',
+  pulse: 'Let the music move you'
 };
 
 function clearSimFBOs() {
@@ -1259,6 +1754,7 @@ function setMode(m) {
   btnCrystal.classList.toggle('active', m === 'crystal');
   btnStar.classList.toggle('active', m === 'starlight');
   btnPortal.classList.toggle('active', m === 'portal');
+  btnPulse.classList.toggle('active', m === 'pulse');
   hintEl.textContent = hints[m] || '';
   hintEl.style.opacity = '1';
   setTimeout(() => { hintEl.style.opacity = '0'; }, 3000);
@@ -1270,6 +1766,20 @@ function setMode(m) {
     portalSpread = 0.0;
     portalHandPresent = false;
   }
+  // Clean up pulse state when switching away
+  if (m !== 'pulse') {
+    pulseGesture = 'none';
+    pulsePrevGesture = 'none';
+    pulseHandLandmarks = [];
+    pulseBursts.length = 0;
+    pulseShockwaves.length = 0;
+    pulseBeams.length = 0;
+    pulseFlash = 0;
+  }
+  // Initialize pulse particles on first entry
+  if (m === 'pulse') {
+    for (const p of pulseParticles) initPulseParticle(p, pW, pH);
+  }
   // Clear particle canvas on mode switch to prevent residual overlap
   pCtx.globalCompositeOperation = 'source-over';
   pCtx.fillStyle = '#000';
@@ -1279,6 +1789,19 @@ function setMode(m) {
 btnCrystal.onclick = () => setMode('crystal');
 btnStar.onclick = () => setMode('starlight');
 btnPortal.onclick = () => setMode('portal');
+btnPulse.onclick = async () => {
+  const ok = await initPulseAudio();
+  if (!ok) {
+    hintEl.textContent = 'Microphone access needed for Pulse mode';
+    hintEl.style.opacity = '1';
+    setTimeout(() => { hintEl.style.opacity = '0'; }, 3000);
+    return;
+  }
+  if (pulseAudioCtx && pulseAudioCtx.state === 'suspended') {
+    await pulseAudioCtx.resume();
+  }
+  setMode('pulse');
+};
 
 document.getElementById('flip-btn').onclick = async () => {
   facingMode = facingMode === 'user' ? 'environment' : 'user';
