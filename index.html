@@ -69,19 +69,19 @@ let handsReady = false;
 const fingers = new Float32Array(30);
 const prevFingers = new Float32Array(30);
 
-// ========== HEART STATE ==========
-let heartParticles = [];
-const HEART_MAX = 200;
-const heartColors = [
-  {r:255, g:100, b:140},   // bright pink
-  {r:255, g:150, b:175},   // soft pink
-  {r:255, g:180, b:200},   // light pink
-  {r:255, g:80,  b:120},   // hot pink
-  {r:255, g:200, b:80},    // gold
-  {r:255, g:220, b:120},   // light gold
-  {r:255, g:215, b:0},     // pure gold
-  {r:255, g:170, b:130},   // peach
+// ========== HEART STATE (light-painting trails) ==========
+const heartTrails = new Array(10).fill(null).map(() => ({points: [], color: null}));
+const HEART_TRAIL_MAX = 150;
+const HEART_TRAIL_FADE = 180;
+const heartLineColors = [
+  'rgba(255,110,150,',   // bright pink
+  'rgba(255,160,185,',   // soft pink
+  'rgba(255,80,130,',    // hot pink
+  'rgba(255,200,90,',    // gold
+  'rgba(255,220,140,',   // light gold
+  'rgba(255,175,140,',   // peach
 ];
+let heartFadingTrails = [];
 
 // ========== PULSE STATE ==========
 let pulseAudioCtx = null;
@@ -924,97 +924,96 @@ function initPulseShader() {
   ]);
 }
 
-// ========== HEART 2D OVERLAY ==========
+// ========== HEART 2D OVERLAY (light-painting trails) ==========
 
-function drawHeartShape(ctx, cx, cy, size, angle) {
-  ctx.save();
-  ctx.translate(cx, cy);
-  ctx.rotate(angle);
-  const w = size, h = size;
-  const x = -w / 2, y = -h / 2;
-  ctx.beginPath();
-  ctx.moveTo(x + w / 2, y + h);
-  ctx.bezierCurveTo(x + w / 2, y + h * 0.75, x, y + h * 0.6, x, y + h * 0.35);
-  ctx.bezierCurveTo(x, y, x + w * 0.35, y, x + w / 2, y + h * 0.25);
-  ctx.bezierCurveTo(x + w * 0.65, y, x + w, y, x + w, y + h * 0.35);
-  ctx.bezierCurveTo(x + w, y + h * 0.6, x + w / 2, y + h * 0.75, x + w / 2, y + h);
-  ctx.closePath();
-  ctx.fill();
-  ctx.restore();
-}
+function drawTrailSegments(ctx, points, baseColor, globalFade) {
+  if (points.length < 2) return;
+  for (let i = 1; i < points.length; i++) {
+    const p0 = points[i - 1], p1 = points[i];
+    const age = p1.age || 0;
+    const segFade = 1 - age / HEART_TRAIL_FADE;
+    if (segFade <= 0) continue;
+    const a = segFade * globalFade;
 
-function spawnHeart(px, py) {
-  if (heartParticles.length >= HEART_MAX) {
-    heartParticles.shift();
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+
+    ctx.beginPath();
+    ctx.moveTo(p0.x, p0.y);
+    ctx.lineTo(p1.x, p1.y);
+    ctx.strokeStyle = baseColor + (a * 0.08).toFixed(3) + ')';
+    ctx.lineWidth = 12;
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.moveTo(p0.x, p0.y);
+    ctx.lineTo(p1.x, p1.y);
+    ctx.strokeStyle = baseColor + (a * 0.25).toFixed(3) + ')';
+    ctx.lineWidth = 5;
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.moveTo(p0.x, p0.y);
+    ctx.lineTo(p1.x, p1.y);
+    ctx.strokeStyle = baseColor + (a * 0.9).toFixed(3) + ')';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.moveTo(p0.x, p0.y);
+    ctx.lineTo(p1.x, p1.y);
+    ctx.strokeStyle = 'rgba(255,255,255,' + (a * 0.5).toFixed(3) + ')';
+    ctx.lineWidth = 0.8;
+    ctx.stroke();
   }
-  const c = heartColors[Math.floor(Math.random() * heartColors.length)];
-  heartParticles.push({
-    x: px, y: py,
-    size: 35 + Math.random() * 40,
-    rotation: (Math.random() - 0.5) * 0.6,
-    alpha: 0.85 + Math.random() * 0.15,
-    life: 0,
-    maxLife: 90 + Math.random() * 60,
-    cr: c.r, cg: c.g, cb: c.b,
-    scale: 0
-  });
 }
-
-let heartSpawnAccum = 0;
 
 function updateAndDrawHearts() {
   if (currentMode !== 'heart') return;
 
   pCtx.globalCompositeOperation = 'source-over';
-  pCtx.fillStyle = 'rgba(0,0,0,0.06)';
-  pCtx.fillRect(0, 0, pW, pH);
+  pCtx.clearRect(0, 0, pW, pH);
   pCtx.globalCompositeOperation = 'lighter';
 
-  let anyFinger = false;
   for (let i = 0; i < 10; i++) {
+    const trail = heartTrails[i];
     if (fingers[i*3+2] > 0.5) {
-      anyFinger = true;
       const fx = fingers[i*3] * pW;
       const fy = fingers[i*3+1] * pH;
-      const pfx = prevFingers[i*3] * pW;
-      const pfy = prevFingers[i*3+1] * pH;
-      const dx = fx - pfx, dy = fy - pfy;
-      const dist = Math.sqrt(dx*dx + dy*dy);
-      if (dist > 8) {
-        const steps = Math.min(Math.floor(dist / 20), 4);
-        for (let s = 0; s <= steps; s++) {
-          const t = steps > 0 ? s / steps : 0;
-          spawnHeart(pfx + dx * t, pfy + dy * t);
-        }
-      } else {
-        heartSpawnAccum += 0.15;
-        if (heartSpawnAccum >= 1) {
-          heartSpawnAccum -= 1;
-          spawnHeart(fx, fy);
-        }
+      if (!trail.color) {
+        trail.color = heartLineColors[Math.floor(Math.random() * heartLineColors.length)];
+      }
+      const last = trail.points[trail.points.length - 1];
+      if (!last || Math.abs(fx - last.x) > 1 || Math.abs(fy - last.y) > 1) {
+        trail.points.push({x: fx, y: fy, age: 0});
+        if (trail.points.length > HEART_TRAIL_MAX) trail.points.shift();
+      }
+    } else {
+      if (trail.points.length > 0) {
+        heartFadingTrails.push({points: [...trail.points], color: trail.color, fade: 1.0});
+        trail.points.length = 0;
+        trail.color = null;
       }
     }
+
+    for (const p of trail.points) p.age++;
+
+    if (trail.points.length > 1) {
+      drawTrailSegments(pCtx, trail.points, trail.color, 1.0);
+      const tip = trail.points[trail.points.length - 1];
+      pCtx.beginPath();
+      pCtx.arc(tip.x, tip.y, 4, 0, TAU);
+      pCtx.fillStyle = 'rgba(255,255,255,0.7)';
+      pCtx.fill();
+    }
   }
-  if (!anyFinger) heartSpawnAccum = 0;
 
-  for (let i = heartParticles.length - 1; i >= 0; i--) {
-    const h = heartParticles[i];
-    h.life++;
-    if (h.life > h.maxLife) { heartParticles.splice(i, 1); continue; }
-
-    const lifeRatio = h.life / h.maxLife;
-    h.scale = Math.min(h.life / 6, 1);
-    const fadeOut = 1 - lifeRatio * lifeRatio * lifeRatio;
-    const a = h.alpha * fadeOut;
-    if (a < 0.01) continue;
-
-    const drawSize = h.size * h.scale;
-
-    pCtx.fillStyle = `rgba(${h.cr},${h.cg},${h.cb},${a * 0.15})`;
-    drawHeartShape(pCtx, h.x, h.y, drawSize * 1.6, h.rotation);
-
-    pCtx.fillStyle = `rgba(${h.cr},${h.cg},${h.cb},${a})`;
-    drawHeartShape(pCtx, h.x, h.y, drawSize, h.rotation);
+  for (let i = heartFadingTrails.length - 1; i >= 0; i--) {
+    const ft = heartFadingTrails[i];
+    ft.fade -= 0.012;
+    for (const p of ft.points) p.age++;
+    if (ft.fade <= 0) { heartFadingTrails.splice(i, 1); continue; }
+    drawTrailSegments(pCtx, ft.points, ft.color, ft.fade);
   }
 }
 // ========== END HEART ==========
@@ -1594,7 +1593,8 @@ function setMode(m) {
   if (m === 'starlight') { projectiles.length = 0; sparks.length = 0; }
   // Clean up heart state when switching away
   if (m !== 'heart') {
-    heartParticles.length = 0;
+    for (const t of heartTrails) { t.points.length = 0; t.color = null; }
+    heartFadingTrails.length = 0;
   }
   // Clean up pulse state when switching away
   if (m !== 'pulse') {
