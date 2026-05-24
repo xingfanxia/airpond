@@ -46,7 +46,6 @@ canvas{display:block;width:100%;height:100%}
 <div id="ui">
   <button id="btn-crystal" class="active">Crystal</button>
   <button id="btn-star">Starlight</button>
-  <button id="btn-heart">Heart ❤️</button>
   <button id="btn-pulse">Pulse</button>
 </div>
 
@@ -61,27 +60,13 @@ const extLinF = gl.getExtension('OES_texture_float_linear');
 const extLinH = gl.getExtension('OES_texture_half_float_linear');
 
 let W, H, simW, simH;
-let currentMode = 'crystal'; // 'crystal', 'starlight', 'heart', or 'pulse'
+let currentMode = 'crystal'; // 'crystal', 'starlight', or 'pulse'
 let facingMode = 'user';
 let videoReady = false;
 let handsReady = false;
 
 const fingers = new Float32Array(30);
 const prevFingers = new Float32Array(30);
-
-// ========== HEART STATE (light-painting trails) ==========
-const heartTrails = new Array(10).fill(null).map(() => ({points: [], color: null}));
-const HEART_TRAIL_MAX = 150;
-const HEART_TRAIL_FADE = 180;
-const heartLineColors = [
-  'rgba(255,110,150,',   // bright pink
-  'rgba(255,160,185,',   // soft pink
-  'rgba(255,80,130,',    // hot pink
-  'rgba(255,200,90,',    // gold
-  'rgba(255,220,140,',   // light gold
-  'rgba(255,175,140,',   // peach
-];
-let heartFadingTrails = [];
 
 // ========== PULSE STATE ==========
 let pulseAudioCtx = null;
@@ -870,7 +855,6 @@ void main(){
   gl_FragColor = vec4(clamp(color, 0.0, 1.0), 1.0);
 }`;
 
-// (portal shader removed — replaced by heart mode)
 
 // ========== PULSE SHADER ==========
 const pulseFS = `
@@ -923,100 +907,6 @@ function initPulseShader() {
     'u_bass', 'u_mid', 'u_high', 'u_vol', 'u_resolution'
   ]);
 }
-
-// ========== HEART 2D OVERLAY (light-painting trails) ==========
-
-function drawTrailSegments(ctx, points, baseColor, globalFade) {
-  if (points.length < 2) return;
-  for (let i = 1; i < points.length; i++) {
-    const p0 = points[i - 1], p1 = points[i];
-    const age = p1.age || 0;
-    const segFade = 1 - age / HEART_TRAIL_FADE;
-    if (segFade <= 0) continue;
-    const a = segFade * globalFade;
-
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-
-    ctx.beginPath();
-    ctx.moveTo(p0.x, p0.y);
-    ctx.lineTo(p1.x, p1.y);
-    ctx.strokeStyle = baseColor + (a * 0.08).toFixed(3) + ')';
-    ctx.lineWidth = 12;
-    ctx.stroke();
-
-    ctx.beginPath();
-    ctx.moveTo(p0.x, p0.y);
-    ctx.lineTo(p1.x, p1.y);
-    ctx.strokeStyle = baseColor + (a * 0.25).toFixed(3) + ')';
-    ctx.lineWidth = 5;
-    ctx.stroke();
-
-    ctx.beginPath();
-    ctx.moveTo(p0.x, p0.y);
-    ctx.lineTo(p1.x, p1.y);
-    ctx.strokeStyle = baseColor + (a * 0.9).toFixed(3) + ')';
-    ctx.lineWidth = 2;
-    ctx.stroke();
-
-    ctx.beginPath();
-    ctx.moveTo(p0.x, p0.y);
-    ctx.lineTo(p1.x, p1.y);
-    ctx.strokeStyle = 'rgba(255,255,255,' + (a * 0.5).toFixed(3) + ')';
-    ctx.lineWidth = 0.8;
-    ctx.stroke();
-  }
-}
-
-function updateAndDrawHearts() {
-  if (currentMode !== 'heart') return;
-
-  pCtx.globalCompositeOperation = 'source-over';
-  pCtx.clearRect(0, 0, pW, pH);
-  pCtx.globalCompositeOperation = 'lighter';
-
-  for (let i = 0; i < 10; i++) {
-    const trail = heartTrails[i];
-    if (fingers[i*3+2] > 0.5) {
-      const fx = fingers[i*3] * pW;
-      const fy = fingers[i*3+1] * pH;
-      if (!trail.color) {
-        trail.color = heartLineColors[Math.floor(Math.random() * heartLineColors.length)];
-      }
-      const last = trail.points[trail.points.length - 1];
-      if (!last || Math.abs(fx - last.x) > 1 || Math.abs(fy - last.y) > 1) {
-        trail.points.push({x: fx, y: fy, age: 0});
-        if (trail.points.length > HEART_TRAIL_MAX) trail.points.shift();
-      }
-    } else {
-      if (trail.points.length > 0) {
-        heartFadingTrails.push({points: [...trail.points], color: trail.color, fade: 1.0});
-        trail.points.length = 0;
-        trail.color = null;
-      }
-    }
-
-    for (const p of trail.points) p.age++;
-
-    if (trail.points.length > 1) {
-      drawTrailSegments(pCtx, trail.points, trail.color, 1.0);
-      const tip = trail.points[trail.points.length - 1];
-      pCtx.beginPath();
-      pCtx.arc(tip.x, tip.y, 4, 0, TAU);
-      pCtx.fillStyle = 'rgba(255,255,255,0.7)';
-      pCtx.fill();
-    }
-  }
-
-  for (let i = heartFadingTrails.length - 1; i >= 0; i--) {
-    const ft = heartFadingTrails[i];
-    ft.fade -= 0.012;
-    for (const p of ft.points) p.age++;
-    if (ft.fade <= 0) { heartFadingTrails.splice(i, 1); continue; }
-    drawTrailSegments(pCtx, ft.points, ft.color, ft.fade);
-  }
-}
-// ========== END HEART ==========
 
 // ========== PULSE PARTICLE SYSTEM ==========
 function spawnPulseBurst(cx, cy, count, speedMul) {
@@ -1511,7 +1401,7 @@ function render() {
 
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
   } else {
-    // Crystal / Starlight / Heart: use render shader
+    // Crystal / Starlight: use render shader
     gl.useProgram(renderProg);
     gl.bindBuffer(gl.ARRAY_BUFFER, quadBuf);
     setupAttrib(renderProg);
@@ -1543,8 +1433,6 @@ function render() {
   updateHandPts();
   if (currentMode === 'starlight') {
     detectFlick(); updateProjectiles(); drawKungfu();
-  } else if (currentMode === 'heart') {
-    updateAndDrawHearts();
   } else if (currentMode === 'pulse') {
     updatePulseEffects();
     drawPulseOverlay();
@@ -1558,14 +1446,12 @@ function render() {
 // --- UI ---
 const btnCrystal = document.getElementById('btn-crystal');
 const btnStar = document.getElementById('btn-star');
-const btnHeart = document.getElementById('btn-heart');
 const btnPulse = document.getElementById('btn-pulse');
 const hintEl = document.getElementById('hint');
 
 const hints = {
   crystal: 'Touch to create waves',
   starlight: 'Flick to shoot ✨',
-  heart: 'Move your fingers to create ❤️',
   pulse: 'Let the music move you'
 };
 
@@ -1584,18 +1470,12 @@ function setMode(m) {
   kungfuOn = (m === 'starlight');
   btnCrystal.classList.toggle('active', m === 'crystal');
   btnStar.classList.toggle('active', m === 'starlight');
-  btnHeart.classList.toggle('active', m === 'heart');
   btnPulse.classList.toggle('active', m === 'pulse');
   hintEl.textContent = hints[m] || '';
   hintEl.style.opacity = '1';
   setTimeout(() => { hintEl.style.opacity = '0'; }, 3000);
   if (m !== 'crystal') clearSimFBOs();
   if (m === 'starlight') { projectiles.length = 0; sparks.length = 0; }
-  // Clean up heart state when switching away
-  if (m !== 'heart') {
-    for (const t of heartTrails) { t.points.length = 0; t.color = null; }
-    heartFadingTrails.length = 0;
-  }
   // Clean up pulse state when switching away
   if (m !== 'pulse') {
     pulseGesture = 'none';
@@ -1618,7 +1498,6 @@ function setMode(m) {
 
 btnCrystal.onclick = () => setMode('crystal');
 btnStar.onclick = () => setMode('starlight');
-btnHeart.onclick = () => setMode('heart');
 btnPulse.onclick = async () => {
   const ok = await initPulseAudio();
   if (!ok) {
