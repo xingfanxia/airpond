@@ -46,6 +46,7 @@ canvas{display:block;width:100%;height:100%}
 <div id="ui">
   <button id="btn-crystal" class="active">Crystal</button>
   <button id="btn-star">Starlight</button>
+  <button id="btn-portal">Portal</button>
 </div>
 
 <script type="module">
@@ -59,13 +60,40 @@ const extLinF = gl.getExtension('OES_texture_float_linear');
 const extLinH = gl.getExtension('OES_texture_half_float_linear');
 
 let W, H, simW, simH;
-let currentMode = 'crystal'; // 'crystal' or 'starlight'
+let currentMode = 'crystal'; // 'crystal', 'starlight', or 'portal'
 let facingMode = 'user';
 let videoReady = false;
 let handsReady = false;
 
 const fingers = new Float32Array(30);
 const prevFingers = new Float32Array(30);
+
+// ========== PORTAL STATE ==========
+let portalOpen = 0.0;       // 0 = closed, 1 = fully open (animated)
+let portalCx = 0.5;         // hand center X (normalized)
+let portalCy = 0.5;         // hand center Y (normalized)
+let portalSpread = 0.0;     // hand spread factor (fingers apart = bigger)
+let portalHandPresent = false;
+let portalRimParticles = [];
+const PORTAL_RIM_N = 120;
+for (let i = 0; i < PORTAL_RIM_N; i++) {
+  portalRimParticles.push({
+    angle: Math.random() * Math.PI * 2,
+    speed: 0.3 + Math.random() * 1.2,
+    r: 0.5 + Math.random() * 2,
+    offset: 0.85 + Math.random() * 0.3,
+    phase: Math.random() * Math.PI * 2,
+    cr: 0, cg: 0, cb: 0
+  });
+}
+// assign colors: teal/cyan/magenta/violet mix
+for (const p of portalRimParticles) {
+  const t = Math.random();
+  if (t < 0.35) { p.cr=80; p.cg=220; p.cb=255; }      // cyan
+  else if (t < 0.60) { p.cr=180; p.cg=100; p.cb=255; } // violet
+  else if (t < 0.80) { p.cr=255; p.cg=120; p.cb=200; } // magenta
+  else { p.cr=120; p.cg=255; p.cb=200; }                // teal
+}
 
 // ========== REVEAL MASK SYSTEM ==========
 let maskCanvas, maskCtx, maskTex;
@@ -710,6 +738,238 @@ void main(){
   gl_FragColor = vec4(clamp(color, 0.0, 1.0), 1.0);
 }`;
 
+// --- Portal shader ---
+const portalFS = `
+precision highp float;
+uniform sampler2D u_camera;
+uniform float u_mirror;
+uniform float u_time;
+uniform float u_portalOpen;
+uniform vec2 u_portalCenter;
+uniform float u_portalSpread;
+uniform vec2 u_resolution;
+
+// Simple hash for procedural noise
+float hash(vec2 p) {
+  return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+}
+
+float noise(vec2 p) {
+  vec2 i = floor(p);
+  vec2 f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  float a = hash(i);
+  float b = hash(i + vec2(1.0, 0.0));
+  float c = hash(i + vec2(0.0, 1.0));
+  float d = hash(i + vec2(1.0, 1.0));
+  return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+
+float fbm(vec2 p) {
+  float v = 0.0;
+  float amp = 0.5;
+  for (int i = 0; i < 4; i++) {
+    v += amp * noise(p);
+    p *= 2.1;
+    amp *= 0.5;
+  }
+  return v;
+}
+
+varying vec2 v_uv;
+
+void main() {
+  vec2 camUV = vec2(mix(v_uv.x, 1.0 - v_uv.x, u_mirror), v_uv.y);
+  vec3 cam = texture2D(u_camera, camUV).rgb;
+
+  if (u_portalOpen < 0.005) {
+    gl_FragColor = vec4(cam, 1.0);
+    return;
+  }
+
+  // Aspect-corrected coordinates
+  float aspect = u_resolution.x / u_resolution.y;
+  vec2 uv = v_uv;
+  vec2 center = u_portalCenter;
+
+  // Compute ellipse distance
+  float baseRx = 0.12 + u_portalSpread * 0.10;
+  float baseRy = baseRx * 1.35;
+  float rx = baseRx * u_portalOpen;
+  float ry = baseRy * u_portalOpen;
+  vec2 d = (uv - center) * vec2(aspect, 1.0);
+  float ellipseDist = length(d / vec2(rx * aspect, ry));
+
+  // Portal edge zone
+  float edgeWidth = 0.18 + 0.05 * sin(u_time * 1.5);
+  float innerEdge = 1.0 - edgeWidth;
+  float outerEdge = 1.0 + edgeWidth * 0.6;
+
+  // Masks
+  float insideMask = 1.0 - smoothstep(innerEdge - 0.05, innerEdge + 0.02, ellipseDist);
+  float edgeMask = smoothstep(innerEdge - 0.15, innerEdge, ellipseDist) *
+                   (1.0 - smoothstep(outerEdge, outerEdge + 0.15, ellipseDist));
+  float outerFade = 1.0 - smoothstep(outerEdge, outerEdge + 0.3, ellipseDist);
+
+  // --- Nebula / cosmic world inside portal ---
+  float t = u_time * 0.25;
+  vec2 nebUV = (uv - center) * 3.0 + vec2(t * 0.3, t * 0.15);
+
+  // Swirling distortion
+  float angle = atan(d.y, d.x);
+  float dist = length(d);
+  nebUV += vec2(cos(angle + t), sin(angle + t)) * 0.3;
+
+  float n1 = fbm(nebUV * 1.5 + vec2(t * 0.1, -t * 0.15));
+  float n2 = fbm(nebUV * 2.5 - vec2(t * 0.2, t * 0.1));
+  float n3 = fbm(nebUV * 4.0 + vec2(-t * 0.15, t * 0.25));
+
+  // Deep space base color
+  vec3 nebula = vec3(0.02, 0.01, 0.04);
+  // Teal cloud
+  nebula += vec3(0.05, 0.25, 0.35) * smoothstep(0.3, 0.7, n1) * 1.2;
+  // Violet cloud
+  nebula += vec3(0.3, 0.08, 0.4) * smoothstep(0.35, 0.75, n2) * 0.9;
+  // Magenta highlight
+  nebula += vec3(0.5, 0.1, 0.3) * smoothstep(0.5, 0.8, n3) * 0.6;
+  // Star points
+  float starNoise = hash(floor(uv * u_resolution * 0.3) + floor(t * 0.5));
+  float starBright = smoothstep(0.985, 0.999, starNoise);
+  float twinkle = 0.5 + 0.5 * sin(starNoise * 100.0 + u_time * 3.0);
+  nebula += vec3(0.9, 0.95, 1.0) * starBright * twinkle;
+  // Depth glow at center
+  float centerGlow = exp(-dist * 6.0 / (rx + ry));
+  nebula += vec3(0.15, 0.2, 0.35) * centerGlow * 0.5;
+
+  // --- Edge glow with chromatic aberration ---
+  float edgePulse = 0.6 + 0.4 * sin(angle * 6.0 + u_time * 2.5) *
+                                sin(angle * 3.0 - u_time * 1.8);
+  float energyFlow = 0.5 + 0.5 * sin(angle * 10.0 - u_time * 4.0 + n1 * 5.0);
+  vec3 edgeColor = mix(vec3(0.2, 0.8, 1.0), vec3(0.7, 0.3, 1.0), energyFlow);
+  edgeColor += vec3(1.0, 0.4, 0.7) * edgePulse * 0.3;
+  float edgeIntensity = edgeMask * (0.8 + edgePulse * 0.5) * u_portalOpen;
+
+  // Chromatic aberration at boundary
+  float chromaShift = edgeMask * 0.008 * u_portalOpen;
+  float camR = texture2D(u_camera, camUV + vec2(chromaShift, 0.0)).r;
+  float camB = texture2D(u_camera, camUV - vec2(chromaShift, 0.0)).b;
+  vec3 camChroma = vec3(camR, cam.g, camB);
+  vec3 outsideCam = mix(cam, camChroma, edgeMask);
+
+  // --- Final composition ---
+  // Inside: nebula world
+  // Edge: glow ring
+  // Outside: camera feed with chromatic shift
+  vec3 color = outsideCam;
+  color = mix(color, nebula, insideMask);
+  color += edgeColor * edgeIntensity;
+
+  // Outer halo (subtle glow beyond the edge)
+  float halo = smoothstep(outerEdge + 0.3, outerEdge - 0.05, ellipseDist) *
+               (1.0 - insideMask) * (1.0 - edgeMask * 0.5);
+  color += vec3(0.1, 0.3, 0.5) * halo * 0.15 * u_portalOpen;
+
+  // Vignette inside the portal for depth
+  float vignette = 1.0 - smoothstep(0.0, 1.0, ellipseDist) * 0.3;
+  color *= mix(1.0, vignette, insideMask);
+
+  gl_FragColor = vec4(clamp(color, 0.0, 1.0), 1.0);
+}`;
+
+let portalProg, portalU;
+function initPortalShader() {
+  portalProg = createProgram(quadVS, portalFS);
+  portalU = getUniforms(portalProg, [
+    'u_camera', 'u_mirror', 'u_time',
+    'u_portalOpen', 'u_portalCenter', 'u_portalSpread', 'u_resolution'
+  ]);
+}
+
+// ========== PORTAL 2D OVERLAY (rim particles) ==========
+function updatePortalState() {
+  // Detect if any hand is present
+  let handCount = 0;
+  let cx = 0, cy = 0;
+  let minX = 1, maxX = 0, minY = 1, maxY = 0;
+  for (let i = 0; i < 10; i++) {
+    if (fingers[i*3+2] > 0.5) {
+      const fx = fingers[i*3], fy = fingers[i*3+1];
+      cx += fx; cy += fy;
+      if (fx < minX) minX = fx;
+      if (fx > maxX) maxX = fx;
+      if (fy < minY) minY = fy;
+      if (fy > maxY) maxY = fy;
+      handCount++;
+    }
+  }
+  if (handCount > 0) {
+    portalHandPresent = true;
+    const tcx = cx / handCount;
+    const tcy = cy / handCount;
+    // Smooth follow
+    portalCx += (tcx - portalCx) * 0.15;
+    portalCy += (tcy - portalCy) * 0.15;
+    // Spread based on bounding box of fingertips
+    const spread = Math.max(maxX - minX, maxY - minY);
+    const targetSpread = Math.min(spread * 2.5, 1.0);
+    portalSpread += (targetSpread - portalSpread) * 0.1;
+    // Open animation
+    portalOpen = Math.min(1.0, portalOpen + 0.04);
+  } else {
+    portalHandPresent = false;
+    // Close animation
+    portalOpen = Math.max(0.0, portalOpen - 0.025);
+    portalSpread *= 0.95;
+  }
+}
+
+function drawPortalRim() {
+  if (currentMode !== 'portal') return;
+  if (portalOpen < 0.01) {
+    pCtx.globalCompositeOperation = 'source-over';
+    pCtx.fillStyle = '#000';
+    pCtx.fillRect(0, 0, pW, pH);
+    return;
+  }
+
+  pCtx.globalCompositeOperation = 'source-over';
+  pCtx.fillStyle = 'rgba(0,0,0,0.1)';
+  pCtx.fillRect(0, 0, pW, pH);
+  pCtx.globalCompositeOperation = 'lighter';
+
+  const cx = portalCx * pW;
+  const cy = portalCy * pH;
+  const baseRx = (0.12 + portalSpread * 0.10) * pW * portalOpen;
+  const baseRy = baseRx * 1.35;
+
+  for (const p of portalRimParticles) {
+    p.angle += p.speed * 0.025;
+    const wobble = Math.sin(p.angle * 3.0 + p.phase + time * 2.0) * 0.08;
+    const r = p.offset + wobble;
+    const px = cx + Math.cos(p.angle) * baseRx * r;
+    const py = cy + Math.sin(p.angle) * baseRy * r;
+
+    // Fade based on portal open state
+    const fadeIn = Math.min(portalOpen * 3.0, 1.0);
+    const a = (0.3 + 0.4 * Math.sin(p.angle * 2.0 + time * 3.0)) * fadeIn;
+    if (a < 0.02) continue;
+
+    pCtx.beginPath();
+    pCtx.arc(px, py, p.r * portalOpen, 0, TAU);
+    pCtx.fillStyle = `rgba(${p.cr},${p.cg},${p.cb},${a})`;
+    pCtx.fill();
+
+    // Subtle glow for larger particles
+    if (p.r > 1.2) {
+      pCtx.beginPath();
+      pCtx.arc(px, py, p.r * 3.0 * portalOpen, 0, TAU);
+      pCtx.fillStyle = `rgba(${p.cr},${p.cg},${p.cb},${a * 0.12})`;
+      pCtx.fill();
+    }
+  }
+}
+// ========== END PORTAL ==========
+
 // --- GL setup ---
 const quadBuf = gl.createBuffer();
 gl.bindBuffer(gl.ARRAY_BUFFER, quadBuf);
@@ -717,6 +977,7 @@ gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.ST
 
 const simProg = createProgram(quadVS, simFS);
 const renderProg = createProgram(quadVS, renderFS);
+initPortalShader();
 
 function getUniforms(prog, names) {
   const u = {};
@@ -908,36 +1169,61 @@ function render() {
   // Render pass
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   gl.viewport(0, 0, W, H);
-  gl.useProgram(renderProg);
-  gl.bindBuffer(gl.ARRAY_BUFFER, quadBuf);
-  setupAttrib(renderProg);
 
-  gl.activeTexture(gl.TEXTURE0);
-  gl.bindTexture(gl.TEXTURE_2D, simFBOs[1].tex);
-  gl.uniform1i(renU.u_sim, 0);
+  if (currentMode === 'portal') {
+    // Portal mode: use portal shader
+    updatePortalState();
+    gl.useProgram(portalProg);
+    gl.bindBuffer(gl.ARRAY_BUFFER, quadBuf);
+    setupAttrib(portalProg);
 
-  gl.activeTexture(gl.TEXTURE1);
-  gl.bindTexture(gl.TEXTURE_2D, camTex);
-  gl.uniform1i(renU.u_camera, 1);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, camTex);
+    gl.uniform1i(portalU.u_camera, 0);
 
-  gl.activeTexture(gl.TEXTURE3);
-  gl.bindTexture(gl.TEXTURE_2D, maskTex);
-  gl.uniform1i(renU.u_mask, 3);
+    gl.uniform1f(portalU.u_mirror, facingMode === 'user' ? 1.0 : 0.0);
+    gl.uniform1f(portalU.u_time, time);
+    gl.uniform1f(portalU.u_portalOpen, portalOpen);
+    gl.uniform2f(portalU.u_portalCenter, portalCx, portalCy);
+    gl.uniform1f(portalU.u_portalSpread, portalSpread);
+    gl.uniform2f(portalU.u_resolution, W, H);
 
-  gl.uniform2f(renU.u_texel, 1.0/W, 1.0/H);
-  gl.uniform2f(renU.u_simTexel, 1.0/simW, 1.0/simH);
-  gl.uniform1f(renU.u_intensity, 1.0);
-  gl.uniform1f(renU.u_revealMode, 0.0);
-  gl.uniform1f(renU.u_aspect, H/W);
-  gl.uniform1f(renU.u_mirror, facingMode === 'user' ? 1.0 : 0.0);
-  gl.uniform1f(renU.u_time, time);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  } else {
+    // Crystal / Starlight / Reveal: use render shader
+    gl.useProgram(renderProg);
+    gl.bindBuffer(gl.ARRAY_BUFFER, quadBuf);
+    setupAttrib(renderProg);
 
-  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, simFBOs[1].tex);
+    gl.uniform1i(renU.u_sim, 0);
+
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, camTex);
+    gl.uniform1i(renU.u_camera, 1);
+
+    gl.activeTexture(gl.TEXTURE3);
+    gl.bindTexture(gl.TEXTURE_2D, maskTex);
+    gl.uniform1i(renU.u_mask, 3);
+
+    gl.uniform2f(renU.u_texel, 1.0/W, 1.0/H);
+    gl.uniform2f(renU.u_simTexel, 1.0/simW, 1.0/simH);
+    gl.uniform1f(renU.u_intensity, 1.0);
+    gl.uniform1f(renU.u_revealMode, 0.0);
+    gl.uniform1f(renU.u_aspect, H/W);
+    gl.uniform1f(renU.u_mirror, facingMode === 'user' ? 1.0 : 0.0);
+    gl.uniform1f(renU.u_time, time);
+
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  }
 
   // Particle overlays
   updateHandPts();
   if (currentMode === 'starlight') {
     detectFlick(); updateProjectiles(); drawKungfu();
+  } else if (currentMode === 'portal') {
+    drawPortalRim();
   } else {
     pCtx.globalCompositeOperation = 'source-over';
     pCtx.fillStyle = '#000';
@@ -948,11 +1234,13 @@ function render() {
 // --- UI ---
 const btnCrystal = document.getElementById('btn-crystal');
 const btnStar = document.getElementById('btn-star');
+const btnPortal = document.getElementById('btn-portal');
 const hintEl = document.getElementById('hint');
 
 const hints = {
   crystal: 'Touch to create waves',
-  starlight: 'Flick to shoot ✨'
+  starlight: 'Flick to shoot ✨',
+  portal: 'Move your hand to open a portal'
 };
 
 function clearSimFBOs() {
@@ -970,15 +1258,27 @@ function setMode(m) {
   kungfuOn = (m === 'starlight');
   btnCrystal.classList.toggle('active', m === 'crystal');
   btnStar.classList.toggle('active', m === 'starlight');
+  btnPortal.classList.toggle('active', m === 'portal');
   hintEl.textContent = hints[m] || '';
   hintEl.style.opacity = '1';
   setTimeout(() => { hintEl.style.opacity = '0'; }, 3000);
   if (m !== 'crystal') clearSimFBOs();
   if (m === 'starlight') { projectiles.length = 0; sparks.length = 0; }
+  // Clean up portal state when switching away
+  if (m !== 'portal') {
+    portalOpen = 0.0;
+    portalSpread = 0.0;
+    portalHandPresent = false;
+  }
+  // Clear particle canvas on mode switch to prevent residual overlap
+  pCtx.globalCompositeOperation = 'source-over';
+  pCtx.fillStyle = '#000';
+  pCtx.fillRect(0, 0, pW, pH);
 }
 
 btnCrystal.onclick = () => setMode('crystal');
 btnStar.onclick = () => setMode('starlight');
+btnPortal.onclick = () => setMode('portal');
 
 document.getElementById('flip-btn').onclick = async () => {
   facingMode = facingMode === 'user' ? 'environment' : 'user';
