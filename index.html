@@ -955,6 +955,15 @@ const hints = {
   starlight: 'Flick to shoot ✨'
 };
 
+function clearSimFBOs() {
+  for (const fbo of simFBOs) {
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo.fb);
+    gl.clearColor(0, 0, 0, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+  }
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+}
+
 function setMode(m) {
   currentMode = m;
   starlightOn = (m === 'starlight');
@@ -964,6 +973,7 @@ function setMode(m) {
   hintEl.textContent = hints[m] || '';
   hintEl.style.opacity = '1';
   setTimeout(() => { hintEl.style.opacity = '0'; }, 3000);
+  if (m !== 'crystal') clearSimFBOs();
   if (m === 'starlight') { projectiles.length = 0; sparks.length = 0; }
 }
 
